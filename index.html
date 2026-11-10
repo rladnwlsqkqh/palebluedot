@@ -218,14 +218,14 @@
     if (t < 1) raf = requestAnimationFrame(frame);
     else { state = 'shown'; idx = to; }
   }
-  function go(target) {
+  function go(target, seconds) {
     if (target < 0 || target >= stops.length) return;
     if (state === 'moving') {                    // 움직이는 중이면 바로 도착
       cancelAnimationFrame(raf); idx = to; curL = stops[idx]; draw(curL); state = 'shown';
       return;
     }
     from = idx; to = target; state = 'moving';
-    dur = durFor(stops[from], stops[to]);
+    dur = seconds || durFor(stops[from], stops[to]);
     t0 = performance.now();
     raf = requestAnimationFrame(frame);
   }
@@ -239,7 +239,7 @@
       state = 'shown';
       return;
     }
-    if (state === 'shown' && idx === stops.length - 1) { jump(0); return; }  // 끝 → 처음으로
+    if (state === 'shown' && idx === stops.length - 1) { go(0, 8); return; }  // 끝 → 처음으로 (쭉 돌아오기)
     go(idx + 1);
   }
   function prev() {
