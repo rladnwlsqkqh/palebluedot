@@ -53,7 +53,7 @@
   const E = { x: (EARTH.cx - EARTH.sx) * GS, y: (EARTH.cy - EARTH.sy) * GS }; // 지구 중심 (학교 기준, m)
 
   // ---------- 창백한 푸른 점 (NASA/JPL-Caltech PIA23645) ----------
-  const PBD = { src: 'img/palebluedot.jpg', w: 2615, h: 2587, dx: 1555, dy: 1344.5, dot: 5 };   // dot: 사진 속 점이 보이는 지름(px)
+  const PBD = { src: 'img/palebluedot.jpg', w: 2615, h: 2587, dx: 1555, dy: 1344.5, dot: 5.9 };   // dot: 사진 속 점이 보이는 지름(px)
   const PS = 2 * R_EARTH / PBD.dot;               // m per image px (지구 = 점 하나)
 
   const cv = document.getElementById('c'), ctx = cv.getContext('2d');
@@ -144,7 +144,9 @@
     // 카메라 중심: 학교 → 지구 중심 → 사진 중앙
     const f1 = ss(Math.log2(2.5e6), Math.log2(2.6e7), Math.log2(view));
     let cx = E.x * f1, cy = E.y * f1;
-    const pbdA = ss(16, 3, earthPx);
+    // 사진은 지구가 거의 최종 크기(사진 속 점 크기)가 되었을 때만 나타남 → 크기가 튀지 않음
+    const finalPx = PBD.dot * Math.max(W / PBD.w, H / PBD.h);
+    const pbdA = ss(finalPx * 3.2, finalPx * 1.12, earthPx);
     if (pbdA > 0) {
       const ox = E.x - PBD.dx * PS, oy = E.y - PBD.dy * PS;   // 사진 원점
       const hw = W / 2 * mpp, hh = H / 2 * mpp;
