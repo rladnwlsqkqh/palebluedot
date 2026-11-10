@@ -54,7 +54,9 @@
 
   // ---------- 창백한 푸른 점 (NASA/JPL-Caltech PIA23645) ----------
   const PBD = { src: 'img/palebluedot.jpg', w: 2615, h: 2587, dx: 1555, dy: 1344, dot: 2.5 };
-  const PS = 2 * R_EARTH / PBD.dot;               // m per image px (지구 = 점 하나)
+  // 사진 속 점(보이저 카메라 1픽셀 ≈ 이 사진의 2.5px) 안에서 실제 지구 크기는 0.12픽셀
+  const EARTH_IN_PIXEL = 0.12;
+  const PS = 2 * R_EARTH / (EARTH_IN_PIXEL * PBD.dot);   // m per image px
 
   const cv = document.getElementById('c'), ctx = cv.getContext('2d');
   const ui = document.getElementById('ui'), play = document.getElementById('play');
@@ -118,6 +120,7 @@
   // ---------- 장면 (클릭할 때마다 다음 장면) ----------
   // 광수중학교 → 퇴촌면 → 광주시 → 서울 → 한반도 → 지구 전체 → 창백한 푸른 점
   let stops = [];
+  const PHOTO = 6;                                         // 창백한 푸른 점 장면 번호
   function computeStops() {
     const M = Math.max(W, H);
     const V = m => Math.log2(m / M);                         // 화면 긴 변이 m 미터
@@ -129,14 +132,15 @@
       V(170e3),        // 서울
       V(2.0e6),        // 한반도
       V(2.9e7),        // 지구 전체
-      Math.log2(PS / cover), // 창백한 푸른 점
+      Math.log2(PS / cover), // 창백한 푸른 점 (실제 사진 그대로: 지구 = 0.12픽셀)
+      Math.log2(PS / 4),     // 창백한 푸른 점 확대
     ];
   }
   const ease = t => t * t * t * (t * (t * 6 - 15) + 10);    // smootherstep
   const durFor = (a, b) => 2.4 + 0.42 * Math.abs(b - a);    // 멀수록 조금 더 길게 (초)
 
   // ---------- 그리기 ----------
-  function draw(L) {
+  function draw(L, inPhoto = false) {
     const mpp = Math.pow(2, L);
     const M = Math.max(W, H), view = M * mpp;
     const earthPx = 2 * R_EARTH / mpp;
@@ -144,7 +148,7 @@
     // 카메라 중심: 학교 → 지구 중심 → 사진 중앙
     const f1 = ss(Math.log2(2.5e6), Math.log2(2.6e7), Math.log2(view));
     let cx = E.x * f1, cy = E.y * f1;
-    const pbdA = Math.pow(ss(40, 3.5, earthPx), 1.6);
+    const pbdA = inPhoto ? 1 : Math.pow(ss(2.6, 0.45, earthPx), 1.2);
     if (pbdA > 0) {
       const ox = E.x - PBD.dx * PS, oy = E.y - PBD.dy * PS;   // 사진 원점
       const hw = W / 2 * mpp, hh = H / 2 * mpp;
@@ -160,15 +164,27 @@
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
 
-    // 지구
-    if (earthImg && pbdA < 1) {
-      const gx = sx(-EARTH.sx * GS), gy = sy(-EARTH.sy * GS), gw = 2048 * GS / mpp;
+    // 창백한 푸른 점 (아래에 깔림)
+    if (pbdImg && pbdA > 0) {
+      ctx.globalAlpha = pbdA;
+      ctx.drawImage(pbdImg, sx(E.x - PBD.dx * PS), sy(E.y - PBD.dy * PS), PBD.w * PS / mpp, PBD.h * PS / mpp);
+      ctx.globalAlpha = 1;
+    }
+
+    // 지구 — 사진 위에서 실제 크기(0.12픽셀)까지 계속 작아짐
+    if (earthImg && !inPhoto) {
+      ctx.globalCompositeOperation = pbdA > 0 ? 'screen' : 'source-over';
       if (earthPx > 1.2) {
+        const gx = sx(-EARTH.sx * GS), gy = sy(-EARTH.sy * GS), gw = 2048 * GS / mpp;
         ctx.drawImage(earthImg, gx, gy, gw, gw);
       } else {
+        // 1픽셀보다 작으면 덮는 면적만큼만 빛남
+        ctx.globalAlpha = Math.pow(earthPx / 1.2, 2);
         ctx.fillStyle = 'rgb(150,175,220)';
         ctx.beginPath(); ctx.arc(sx(E.x), sy(E.y), 0.6, 0, 7); ctx.fill();
+        ctx.globalAlpha = 1;
       }
+      ctx.globalCompositeOperation = 'source-over';
     }
 
     // 위성사진 (지구 사진 위에서 점점 사라짐)
@@ -194,12 +210,6 @@
       ctx.globalAlpha = 1;
     }
 
-    // 창백한 푸른 점
-    if (pbdImg && pbdA > 0) {
-      ctx.globalAlpha = pbdA;
-      ctx.drawImage(pbdImg, sx(E.x - PBD.dx * PS), sy(E.y - PBD.dy * PS), PBD.w * PS / mpp, PBD.h * PS / mpp);
-      ctx.globalAlpha = 1;
-    }
   }
 
   // ---------- 진행 ----------
@@ -209,19 +219,19 @@
     W = window.innerWidth; H = window.innerHeight;
     cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
     computeStops();
-    if (state !== 'moving') { curL = stops[idx]; draw(curL); }
+    if (state !== 'moving') { curL = stops[idx]; draw(curL, idx >= PHOTO); }
   }
   function frame(now) {
     const t = Math.min(1, (now - t0) / 1000 / dur);
     curL = stops[from] + (stops[to] - stops[from]) * ease(t);
-    draw(curL);
+    draw(curL, from >= PHOTO && to >= PHOTO);
     if (t < 1) raf = requestAnimationFrame(frame);
     else { state = 'shown'; idx = to; }
   }
   function go(target, seconds) {
     if (target < 0 || target >= stops.length) return;
     if (state === 'moving') {                    // 움직이는 중이면 바로 도착
-      cancelAnimationFrame(raf); idx = to; curL = stops[idx]; draw(curL); state = 'shown';
+      cancelAnimationFrame(raf); idx = to; curL = stops[idx]; draw(curL, idx >= PHOTO); state = 'shown';
       return;
     }
     from = idx; to = target; state = 'moving';
@@ -229,7 +239,7 @@
     t0 = performance.now();
     raf = requestAnimationFrame(frame);
   }
-  function jump(i) { cancelAnimationFrame(raf); idx = i; curL = stops[i]; state = 'shown'; draw(curL); }
+  function jump(i) { cancelAnimationFrame(raf); idx = i; curL = stops[i]; state = 'shown'; draw(curL, i >= PHOTO); }
   function next() {
     if (state === 'loading') return;
     if (state === 'idle') {                      // 첫 클릭: 전체화면만
@@ -274,7 +284,7 @@
     bar.style.opacity = 0;
   });
   window.__pbd = {
-    draw: (i, f = 1) => draw(f >= 1 || i === 0 ? stops[i] : stops[i - 1] + (stops[i] - stops[i - 1]) * ease(f)),
+    draw: (i, f = 1) => draw(f >= 1 || i === 0 ? stops[i] : stops[i - 1] + (stops[i] - stops[i - 1]) * ease(f), i >= PHOTO + 1 || (f >= 1 && i >= PHOTO)),
     get ready() { return ready; }
   };
 })();
