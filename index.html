@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>창백한 푸른 점</title>
+<meta name="description" content="광수중학교에서 창백한 푸른 점까지">
+<meta name="theme-color" content="#000000">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { -webkit-tap-highlight-color: transparent; cursor: pointer; user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; }
+  #ui { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none;
+        transition: opacity 1.2s ease; }
+  #ui.hidden { opacity: 0; }
+  #play { width: 84px; height: 84px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.85);
+          background: rgba(0,0,0,.35); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+          display: grid; place-items: center; transition: opacity .6s ease, transform .3s ease; }
+  #play svg { width: 30px; height: 30px; margin-left: 5px; fill: #fff; }
+  #play.replay svg { margin-left: 0; }
+  #play.loading { opacity: 0; }
+  #bar { position: fixed; left: 0; bottom: 0; height: 2px; width: 0; background: rgba(255,255,255,.6);
+         transition: width .3s ease, opacity .8s ease; }
+  #credit { position: fixed; right: 10px; bottom: 8px; font: 10px/1.3 system-ui, sans-serif;
+            color: rgba(255,255,255,.35); text-align: right; pointer-events: none;
+            transition: opacity 1.2s ease; text-shadow: 0 0 3px #000; }
+  #credit.hidden { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui"><div id="play" class="loading">
+  <svg id="icoPlay" viewBox="0 0 24 24"><path d="M6 4l15 8-15 8z"/></svg>
+</div></div>
+<div id="bar"></div>
+<div id="credit">Imagery © Esri, Maxar, Earthstar Geographics<br>Earth: NASA DSCOVR EPIC · Pale Blue Dot: NASA/JPL-Caltech</div>
+
+<script>
+(() => {
+  // ---------- 장소 ----------
+  const LAT = 37.4731, LON = 127.3195;            // 광수중학교 (경기도 광주시 퇴촌면)
+  const R_EARTH = 6371000;
+
+  // ---------- 위성사진 레이어 (Esri World Imagery) ----------
+  const ZMAX = 18, ZMIN = 4, N = 1024, FEATHER = 0.12;
+  const TILE = (z, y, x) =>
+    `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+  const mppZ = z => 156543.03392 * Math.cos(LAT * Math.PI / 180) / Math.pow(2, z);
+
+  // ---------- 지구 사진 (NASA DSCOVR EPIC, 2025-05-25 03:10 UTC) ----------
+  const EARTH = { src: 'img/earth.jpg', cx: 1031, cy: 1023.5, r: 793, sx: 1112.38, sy: 783.43 };
+  const GS = R_EARTH / EARTH.r;                   // m per image px
+  const E = { x: (EARTH.cx - EARTH.sx) * GS, y: (EARTH.cy - EARTH.sy) * GS }; // 지구 중심 (학교 기준, m)
+
+  // ---------- 창백한 푸른 점 (NASA/JPL-Caltech PIA23645) ----------
+  const PBD = { src: 'img/palebluedot.jpg', w: 2615, h: 2587, dx: 1555, dy: 1344, dot: 2.5 };
+  const PS = 2 * R_EARTH / PBD.dot;               // m per image px (지구 = 점 하나)
+
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const ui = document.getElementById('ui'), play = document.getElementById('play');
+  const bar = document.getElementById('bar'), credit = document.getElementById('credit');
+  let W = 0, H = 0, DPR = 1;
+
+  const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  // ---------- 로딩 ----------
+  let total = 0, done = 0;
+  const tick = () => { done++; bar.style.width = (100 * done / total) + '%'; };
+  const loadImg = (src, cors) => new Promise(res => {
+    total++;
+    const im = new Image();
+    if (cors) im.crossOrigin = 'anonymous';
+    im.onload = () => { tick(); res(im); };
+    im.onerror = () => { tick(); res(null); };
+    im.src = src;
+  });
+
+  function buildLayer(z) {
+    const n = Math.pow(2, z) * 256;
+    const px = (LON + 180) / 360 * n;
+    const s = Math.sin(LAT * Math.PI / 180);
+    const py = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n;
+    const ox = px - N / 2, oy = py - N / 2;
+    const c = document.createElement('canvas'); c.width = c.height = N;
+    const g = c.getContext('2d');
+    const jobs = [];
+    for (let ty = Math.floor(oy / 256); ty * 256 < oy + N; ty++)
+      for (let tx = Math.floor(ox / 256); tx * 256 < ox + N; tx++) {
+        const mx = Math.pow(2, z);
+        if (ty < 0 || ty >= mx) continue;
+        const wx = ((tx % mx) + mx) % mx;
+        jobs.push(loadImg(TILE(z, ty, wx), true).then(im => {
+          if (im) g.drawImage(im, tx * 256 - ox, ty * 256 - oy, 256, 256);
+        }));
+      }
+    return Promise.all(jobs).then(() => {
+      // 가장자리를 부드럽게
+      const f = N * FEATHER;
+      g.globalCompositeOperation = 'destination-out';
+      const edge = (x0, y0, x1, y1, rx, ry, rw, rh) => {
+        const gr = g.createLinearGradient(x0, y0, x1, y1);
+        gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = gr; g.fillRect(rx, ry, rw, rh);
+      };
+      edge(0, 0, f, 0, 0, 0, f, N);
+      edge(N, 0, N - f, 0, N - f, 0, f, N);
+      edge(0, 0, 0, f, 0, 0, N, f);
+      edge(0, N, 0, N - f, 0, N - f, N, f);
+      g.globalCompositeOperation = 'source-over';
+      return { z, c, mpp: mppZ(z) };
+    });
+  }
+
+  const layers = [];
+  let earthImg = null, pbdImg = null, ready = false;
+
+  // ---------- 카메라 타임라인 ----------
+  // key: [시간(초), log2(m/px)]  — 화면 크기에 따라 매번 계산
+  let keys = [];
+  const T_END = 53;
+  function computeKeys() {
+    const M = Math.max(W, H);
+    const V = m => Math.log2(m / M);                         // 화면 긴 변이 m 미터
+    const earthPx = p => Math.log2(2 * R_EARTH / p);          // 지구가 화면에서 p px
+    const cover = Math.max(W / PBD.w, H / PBD.h);
+    const endL = Math.log2(PS / cover);
+    keys = [
+      [0,    V(420)],
+      [1.6,  V(420)],
+      [12.5, V(60e3)],
+      [20.5, V(2.6e6)],
+      [27.5, V(2.4e7)],
+      [31.0, V(2.9e7)],
+      [44.5, earthPx(4)],
+      [T_END, endL],
+    ];
+  }
+  // 단조 3차 보간 (Fritsch–Carlson)
+  function camL(t) {
+    const k = keys, n = k.length;
+    if (t <= k[0][0]) return k[0][1];
+    if (t >= k[n - 1][0]) return k[n - 1][1];
+    const d = [], m = [];
+    for (let i = 0; i < n - 1; i++) d.push((k[i + 1][1] - k[i][1]) / (k[i + 1][0] - k[i][0]));
+    m.push(0);
+    for (let i = 1; i < n - 1; i++) m.push(d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2);
+    m.push(0);
+    for (let i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = m[i + 1] = 0; continue; }
+      const a = m[i] / d[i], b = m[i + 1] / d[i], h = a * a + b * b;
+      if (h > 9) { const s = 3 / Math.sqrt(h); m[i] = s * a * d[i]; m[i + 1] = s * b * d[i]; }
+    }
+    let i = 0; while (t > k[i + 1][0]) i++;
+    const hh = k[i + 1][0] - k[i][0], s = (t - k[i][0]) / hh;
+    const s2 = s * s, s3 = s2 * s;
+    return (2 * s3 - 3 * s2 + 1) * k[i][1] + (s3 - 2 * s2 + s) * hh * m[i] +
+           (-2 * s3 + 3 * s2) * k[i + 1][1] + (s3 - s2) * hh * m[i + 1];
+  }
+
+  // ---------- 그리기 ----------
+  function draw(L) {
+    const mpp = Math.pow(2, L);
+    const M = Math.max(W, H), view = M * mpp;
+    const earthPx = 2 * R_EARTH / mpp;
+
+    // 카메라 중심: 학교 → 지구 중심 → 사진 중앙
+    const f1 = ss(Math.log2(2.5e6), Math.log2(2.6e7), Math.log2(view));
+    let cx = E.x * f1, cy = E.y * f1;
+    const pbdA = Math.pow(ss(40, 3.5, earthPx), 1.6);
+    if (pbdA > 0) {
+      const ox = E.x - PBD.dx * PS, oy = E.y - PBD.dy * PS;   // 사진 원점
+      const hw = W / 2 * mpp, hh = H / 2 * mpp;
+      const minx = ox + hw, maxx = ox + PBD.w * PS - hw;
+      const miny = oy + hh, maxy = oy + PBD.h * PS - hh;
+      cx = minx > maxx ? (minx + maxx) / 2 : Math.min(maxx, Math.max(minx, cx));
+      cy = miny > maxy ? (miny + maxy) / 2 : Math.min(maxy, Math.max(miny, cy));
+    }
+    const sx = x => W / 2 + (x - cx) / mpp, sy = y => H / 2 + (y - cy) / mpp;
+
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+
+    // 지구
+    if (earthImg && pbdA < 1) {
+      const gx = sx(-EARTH.sx * GS), gy = sy(-EARTH.sy * GS), gw = 2048 * GS / mpp;
+      if (earthPx > 1.2) {
+        ctx.drawImage(earthImg, gx, gy, gw, gw);
+      } else {
+        ctx.fillStyle = 'rgb(150,175,220)';
+        ctx.beginPath(); ctx.arc(sx(E.x), sy(E.y), 0.6, 0, 7); ctx.fill();
+      }
+    }
+
+    // 위성사진 (지구 사진 위에서 점점 사라짐)
+    const mapA = 1 - ss(Math.log2(3.2e6), Math.log2(8e6), Math.log2(view));
+    if (mapA > 0 && layers.length) {
+      // 화면을 완전히 덮는 가장 세밀한 레이어부터 시작
+      let start = 0;
+      for (let i = layers.length - 1; i >= 0; i--) {
+        const ly = layers[i], scale = ly.mpp / mpp;
+        if (ss(0.22, 0.45, scale) < 1) continue;
+        const inner = N * (0.5 - FEATHER) * scale;
+        const x0 = sx(0), y0 = sy(0);
+        if (x0 - inner <= 0 && x0 + inner >= W && y0 - inner <= 0 && y0 + inner >= H) { start = i; break; }
+      }
+      for (let i = start; i < layers.length; i++) {
+        const ly = layers[i], scale = ly.mpp / mpp, size = N * scale;
+        if (size < 2) break;
+        const a = (i === start ? 1 : ss(0.22, 0.45, scale)) * mapA;
+        if (a <= 0) continue;
+        ctx.globalAlpha = a;
+        ctx.drawImage(ly.c, sx(0) - size / 2, sy(0) - size / 2, size, size);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 창백한 푸른 점
+    if (pbdImg && pbdA > 0) {
+      ctx.globalAlpha = pbdA;
+      ctx.drawImage(pbdImg, sx(E.x - PBD.dx * PS), sy(E.y - PBD.dy * PS), PBD.w * PS / mpp, PBD.h * PS / mpp);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---------- 재생 ----------
+  let state = 'loading', t0 = 0, raf = 0;
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    computeKeys();
+    if (state !== 'playing') draw(camL(state === 'ended' ? T_END : 0));
+  }
+  function frame(now) {
+    const t = (now - t0) / 1000;
+    draw(camL(t));
+    if (t < T_END + 0.5) raf = requestAnimationFrame(frame);
+    else end();
+  }
+  function start() {
+    state = 'playing';
+    ui.classList.add('hidden'); credit.classList.add('hidden');
+    cancelAnimationFrame(raf);
+    t0 = performance.now();
+    raf = requestAnimationFrame(frame);
+  }
+  function end() {
+    state = 'ended';
+    setTimeout(() => {
+      if (state !== 'ended') return;
+      play.classList.add('replay');
+      play.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>';
+      ui.classList.remove('hidden'); credit.classList.remove('hidden');
+    }, 6000);
+  }
+  function onTap() {
+    if (state === 'loading') return;
+    if (state === 'playing') return;
+    const el = document.documentElement;
+    if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+    start();
+  }
+  document.addEventListener('click', onTap);
+  document.addEventListener('keydown', e => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); onTap(); }
+    if (e.key === 'f') document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {});
+  });
+  window.addEventListener('resize', resize);
+  resize();
+
+  // 가까운 레이어부터 먼저 받아서 첫 화면을 빨리 보여줌
+  const jobs = [];
+  for (let z = ZMAX; z >= ZMIN; z--) jobs.push(buildLayer(z));
+  jobs.push(loadImg(EARTH.src).then(im => earthImg = im));
+  jobs.push(loadImg(PBD.src).then(im => pbdImg = im));
+  Promise.all(jobs.slice(0, ZMAX - ZMIN + 1)).then(ls => {
+    ls.sort((a, b) => a.z - b.z).forEach(l => layers.push(l));
+  }).then(() => Promise.all(jobs)).then(() => {
+    ready = true; state = 'idle';
+    draw(camL(0));
+    play.classList.remove('loading');
+    bar.style.opacity = 0;
+    if (new URLSearchParams(location.search).has('autoplay')) start();
+  });
+  window.__pbd = { draw: t => draw(camL(t)), get ready() { return ready; } };
+})();
+</script>
+</body>
+</html>
